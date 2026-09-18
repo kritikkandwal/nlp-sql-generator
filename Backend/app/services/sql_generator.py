@@ -2,26 +2,44 @@
 import os
 import re
 import sqlparse
-from pathlib import Path
-from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer
+import requests
 
-# ✅ Load model
-model_dir = Path(__file__).resolve().parent.parent.parent / "models" / "fine_tuned_model"
-model_dir_str = os.path.abspath(model_dir)
+# ✅ HuggingFace Inference API (no model loaded in RAM — free tier compatible!)
+HF_API_URL = "https://api-inference.huggingface.co/models/mrm8488/t5-base-finetuned-wikiSQL"
+HF_API_TOKEN = os.environ.get("HF_API_TOKEN", "")  # Optional: set for faster/priority access
 
-try:
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_dir_str, local_files_only=True)
-    tokenizer = AutoTokenizer.from_pretrained(model_dir_str, local_files_only=True, use_fast=False)
-except Exception as e:
-    print(f"[WARNING] Local model load failed. Falling back to Hugging Face. Error: {e}")
-    model_name = "mrm8488/t5-base-finetuned-wikiSQL"
-    try:
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-    except Exception as e2:
-        raise RuntimeError(f"Failed to load both local and remote models. Error: {e2}")
+def hf_generate(input_text):
+    """Call HuggingFace Inference API to generate SQL from natural language."""
+    headers = {}
+    if HF_API_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
 
-generator = pipeline("text2text-generation", model=model, tokenizer=tokenizer)
+    payload = {
+        "inputs": input_text,
+        "parameters": {
+            "max_new_tokens": 256,
+            "num_beams": 5,
+        },
+        "options": {
+            "wait_for_model": True  # wait if model is cold-starting
+        }
+    }
+
+    response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
+
+    if response.status_code != 200:
+        raise RuntimeError(f"HuggingFace API error {response.status_code}: {response.text}")
+
+    result = response.json()
+
+    # The API returns a list of dicts with 'generated_text'
+    if isinstance(result, list) and len(result) > 0:
+        return result[0].get("generated_text", "")
+    elif isinstance(result, dict) and "generated_text" in result:
+        return result["generated_text"]
+    else:
+        raise RuntimeError(f"Unexpected API response format: {result}")
+
 
 # ✅ Parse schema string into dictionary
 def parse_schema(schema_str):
@@ -65,9 +83,7 @@ def is_valid_select(sql):
         return False, f"SQL validation error: {str(e)}"
 
 # ✅ Main cleaning logic with lowercasing for MySQL
-# ✅ Main cleaning logic with lowercasing for MySQL
 def clean_sql(sql, user_input, schema_info=None):
-    original_sql = sql
     try:
         sql = re.sub(r'[`";]', '', sql).strip()
 
@@ -78,21 +94,21 @@ def clean_sql(sql, user_input, schema_info=None):
                     sql = re.sub(rf'\b{term}\b', mapped, sql, flags=re.IGNORECASE)
 
         if "employee" in user_input.lower():
-            sql = re.sub(r'\bFROM\s+table\b', 'FROM employee', sql, flags=re.IGNORECASE)  # ✅ Added
+            sql = re.sub(r'\bFROM\s+table\b', 'FROM employee', sql, flags=re.IGNORECASE)
             sql = re.sub(r'\b(?:table|employee|emp)\b', 'Employee', sql, flags=re.IGNORECASE)
             sql = re.sub(r'\b(?:emp_?id)\b', 'EmpID', sql, flags=re.IGNORECASE)
             sql = re.sub(r'\b(?:salaries?|earnings?|pay|compensation)\b', 'Salary', sql, flags=re.IGNORECASE)
 
-            sql = re.sub(r'\bSELECT\s+(Employees|Employee)\b', 'SELECT EmpID, Salary', sql, flags=re.IGNORECASE)  # ✅ Updated
-            sql = re.sub(r'\b(Employees|Employee)\b', 'EmpID, Salary', sql, flags=re.IGNORECASE)  # ✅ Updated
+            sql = re.sub(r'\bSELECT\s+(Employees|Employee)\b', 'SELECT EmpID, Salary', sql, flags=re.IGNORECASE)
+            sql = re.sub(r'\b(Employees|Employee)\b', 'EmpID, Salary', sql, flags=re.IGNORECASE)
 
-            sql = re.sub(r'\bEarnings\s*\(\s*\$\s*\)', 'Salary', sql, flags=re.IGNORECASE)  # ✅ Added
-            sql = re.sub(r'\bEarnings\b', 'Salary', sql, flags=re.IGNORECASE)  # ✅ Added
-            sql = re.sub(r'\bPay\b|\bCompensation\b', 'Salary', sql, flags=re.IGNORECASE)  # ✅ Added
+            sql = re.sub(r'\bEarnings\s*\(\s*\$\s*\)', 'Salary', sql, flags=re.IGNORECASE)
+            sql = re.sub(r'\bEarnings\b', 'Salary', sql, flags=re.IGNORECASE)
+            sql = re.sub(r'\bPay\b|\bCompensation\b', 'Salary', sql, flags=re.IGNORECASE)
 
-            sql = re.sub(r'\bEmployee\b', 'employee', sql, flags=re.IGNORECASE)  # ✅ Added
+            sql = re.sub(r'\bEmployee\b', 'employee', sql, flags=re.IGNORECASE)
 
-            sql = re.sub(r'WHERE\s+\w+\s*\(\s*\$\s*\)\s*([><=]+)\s*(\d+)', r'WHERE Salary \1 \2', sql, flags=re.IGNORECASE)  # ✅ Added
+            sql = re.sub(r'WHERE\s+\w+\s*\(\s*\$\s*\)\s*([><+=]+)\s*(\d+)', r'WHERE Salary \1 \2', sql, flags=re.IGNORECASE)
 
             numbers = [num.replace(',', '').replace('₹', '') for num in re.findall(r'(\d[\d,\.]*)', user_input)]
 
@@ -122,44 +138,30 @@ def clean_sql(sql, user_input, schema_info=None):
         sql = re.sub(r'\bFROM\s+Employee\b', 'FROM employee', sql, flags=re.IGNORECASE)
         sql = re.sub(r'\bJOIN\s+Employee\b', 'JOIN employee', sql, flags=re.IGNORECASE)
 
-                # ✅ Smart cleanup for malformed generated SQL
-        # Remove repeated WHERE/SELECT/FROM patterns
-        sql = re.sub(r'(FROM\s+\w+).*\1', r'\1', sql, flags=re.IGNORECASE)  # ✅ Added
-        sql = re.sub(r'(WHERE\s+Salary\s+BETWEEN\s+\d+\s+AND\s+\d+).*\1', r'\1', sql, flags=re.IGNORECASE)  # ✅ Added
-        sql = re.sub(r'(SELECT\s+[^\s]+,?\s*)\s*WHERE', r'\1 FROM employee WHERE', sql, flags=re.IGNORECASE)  # ✅ Added
-        sql = re.sub(r'FROM\s+[^ ]+\s+FROM', 'FROM', sql, flags=re.IGNORECASE)  # ✅ Added
-        sql = re.sub(r'WHERE\s+[^ ]+\s+WHERE', 'WHERE', sql, flags=re.IGNORECASE)  # ✅ Added
+        sql = re.sub(r'(FROM\s+\w+).*\1', r'\1', sql, flags=re.IGNORECASE)
+        sql = re.sub(r'(WHERE\s+Salary\s+BETWEEN\s+\d+\s+AND\s+\d+).*\1', r'\1', sql, flags=re.IGNORECASE)
+        sql = re.sub(r'(SELECT\s+[^\s]+,?\s*)\s*WHERE', r'\1 FROM employee WHERE', sql, flags=re.IGNORECASE)
+        sql = re.sub(r'FROM\s+[^ ]+\s+FROM', 'FROM', sql, flags=re.IGNORECASE)
+        sql = re.sub(r'WHERE\s+[^ ]+\s+WHERE', 'WHERE', sql, flags=re.IGNORECASE)
 
-        # ✅ Ensure SELECT and FROM both exist
         if not re.search(r'\bSELECT\b', sql, re.IGNORECASE):
             sql = "SELECT EmpID, Salary " + sql
         if not re.search(r'\bFROM\b', sql, re.IGNORECASE):
             sql = re.sub(r'(EmpID, Salary)', r'\1 FROM employee', sql, count=1, flags=re.IGNORECASE)
 
-            # ✅ Fix trailing comma in SELECT
         sql = re.sub(r'SELECT\s+([^,]+),\s+FROM', r'SELECT \1 FROM', sql, flags=re.IGNORECASE)
-
-        # ✅ Fix multiple BETWEEN clauses or malformed ones
         sql = re.sub(r'(BETWEEN\s+\d+\s+AND\s+\d+)[^\s]*', r'\1', sql, flags=re.IGNORECASE)
 
-        # ✅ Ensure column list is valid
         if re.search(r'SELECT\s+FROM', sql, re.IGNORECASE):
             sql = re.sub(r'SELECT\s+FROM', 'SELECT EmpID, Salary FROM', sql, flags=re.IGNORECASE)
 
-        # ✅ Force default columns if SELECT has no columns
         if re.match(r'^\s*SELECT\s*,?\s*FROM', sql, re.IGNORECASE):
             sql = re.sub(r'SELECT\s*,?\s*FROM', 'SELECT EmpID, Salary FROM', sql, flags=re.IGNORECASE)
 
-        # ✅ Ensure both columns are selected
         if re.match(r'^\s*SELECT\s+EmpID\s+FROM', sql, re.IGNORECASE):
             sql = re.sub(r'SELECT\s+EmpID\s+FROM', 'SELECT EmpID, Salary FROM', sql, flags=re.IGNORECASE)
-        
-        # ✅ Remove duplicate trailing fare like "= 45000 and 60000"
+
         sql = re.sub(r'(BETWEEN\s+\d+\s+AND\s+\d+).*=.*', r'\1', sql, flags=re.IGNORECASE)
-        
-        # ✅ Fix malformed WHERE clauses missing proper syntax
-        sql = re.sub(r'\sWHERE\s+Salary\s+BETWEEN\s+\d+\s+AND\s+\d+\s*=\s*\d+\s+AND\s+\d+', 
-                     lambda m: m.group(0).split('=')[0].strip(), sql, flags=re.IGNORECASE)
 
         is_valid, error_msg = is_valid_select(sql)
         if not is_valid:
@@ -168,7 +170,6 @@ def clean_sql(sql, user_input, schema_info=None):
         return sql
     except Exception as e:
         return f"ERROR: SQL cleaning failed - {str(e)}"
-
 
 
 # ✅ Final callable function
@@ -182,13 +183,8 @@ def generate_sql(natural_language):
             schema_info = parse_schema(schema_str)
 
         input_text = f"translate English to SQL: {natural_language}"
-        result = generator(
-            input_text,
-            max_new_tokens=256,
-            num_beams=5,
-            early_stopping=True
-        )
-        sql_raw = result[0]['generated_text']
+        sql_raw = hf_generate(input_text)
+
         cleaned_sql = clean_sql(sql_raw, natural_language, schema_info)
         if cleaned_sql.startswith("ERROR:"):
             return cleaned_sql
