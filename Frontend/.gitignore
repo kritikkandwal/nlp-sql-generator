@@ -1,0 +1,16 @@
+## .NET
+bin/
+obj/
+*.user
+.vs/
+*.suo
+*.sln.docstates
+[Tt]emp/
+[Ll]og/
+[Ll]ogs/
+.DS_Store
+*.nupkg
+*.snupkg
+project.lock.json
+artifacts/
+TestResults/

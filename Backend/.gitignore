@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv
+env/
+venv/
+ENV/
+models/
+model_cache/
+*.log
+.DS_Store
+tempCodeRunnerFile.py
+training/__pycache__/

@@ -1,0 +1,92 @@
+﻿@{
+    ViewBag.Title = "NLP SQL Generator";
+}
+
+<div class="container">
+    <header>
+        <h1>NLP SQL GENERATOR</h1>
+        <p class="subtitle">Transform natural language into SQL queries with AI</p>
+    </header>
+
+    <div class="glass-card">
+        <form method="post" asp-action="GenerateQuery" id="queryForm">
+            <div class="form-group">
+                <label for="userInput"><i class="fas fa-terminal"></i> ENTER YOUR QUERY IN ENGLISH</label>
+                <div class="input-wrapper">
+                    <input type="text" name="userInput" id="userInput"
+                           placeholder="e.g. Show employees earning more than 50000" required>
+                </div>
+            </div>
+            <button type="submit" class="glow-btn">
+                <i class="fas fa-bolt"></i> Generate SQL & Execute
+            </button>
+        </form>
+    </div>
+
+    <div id="loading">
+        <i class="fas fa-spinner fa-spin"></i>
+        <p class="loading-text">Processing request with AI engine <span class="pulse"></span></p>
+    </div>
+
+    @if (!string.IsNullOrEmpty(ViewBag.ModelError))
+    {
+        <div class="error-box">
+            <strong>AI MODEL ERROR:</strong> @ViewBag.ModelError
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(ViewBag.ExecutionError))
+    {
+        <div class="error-box">
+            <strong>EXECUTION ERROR:</strong> @ViewBag.ExecutionError
+        </div>
+    }
+
+    @if (ViewBag.GeneratedQuery != null)
+    {
+        <div id="results" class="result-section" style="display: block; opacity: 1;">
+            <div class="glass-card">
+                <h3 class="section-title"><i class="fas fa-code"></i> GENERATED SQL QUERY</h3>
+                <pre class="@(ViewBag.GeneratedQuery.StartsWith("ERROR:") ? "error-query" : "")">@ViewBag.GeneratedQuery</pre>
+
+                @if (ViewBag.Result != null && ViewBag.Result.Count > 0)
+                {
+                    <h3 class="section-title"><i class="fas fa-table"></i> QUERY RESULTS</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>EMPID</th>
+                                <th>SALARY</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in ViewBag.Result)
+                            {
+                                <tr>
+                                    <td>@row.EmpID</td>
+                                    <td>@row.Salary.ToString("C")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <p class="record-count">Showing @ViewBag.Result.Count records</p>
+                }
+                else if (string.IsNullOrEmpty(ViewBag.ModelError) && string.IsNullOrEmpty(ViewBag.ExecutionError))
+                {
+                    <p class="no-records">No records found.</p>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@section Scripts {
+    <script>
+        document.getElementById("queryForm").addEventListener("submit", function () {
+            document.getElementById("loading").style.display = "block";
+            if (document.getElementById("results")) {
+                document.getElementById("results").style.display = "none";
+            }
+        });
+    </script>
+}
